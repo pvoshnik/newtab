@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Новая вкладка</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+           image-rendering: pixelated; image-rendering: crisp-edges; }
+  #ui { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 22px; padding-bottom: 8vh;
+        pointer-events: none; font-family: "Segoe UI", system-ui, sans-serif; }
+  #ui > * { pointer-events: auto; }
+  #title { margin: 0; font-size: clamp(48px, 8vw, 84px); font-weight: 700; letter-spacing: 2px;
+           background: linear-gradient(90deg, #9b4be8, #e5334b, #f58a1f, #f5d23c, #f58a1f, #e5334b, #9b4be8);
+           background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+           color: transparent; animation: flow 8s linear infinite; user-select: none; }
+  @keyframes flow { to { background-position: -200% 0; } }
+  #sf { width: min(640px, 86vw); position: relative; }
+  #q { width: 100%; box-sizing: border-box; padding: 15px 22px 15px 50px; font-size: 17px; color: #eee;
+       background: rgba(15,12,30,.6); border: 1px solid rgba(255,255,255,.18); border-radius: 30px;
+       outline: none; backdrop-filter: blur(6px); transition: border-color .2s, background .2s; }
+  #q::placeholder { color: rgba(255,255,255,.45); }
+  #q:focus { border-color: rgba(255,150,60,.75); background: rgba(15,12,30,.8); }
+  #sf svg { position: absolute; left: 19px; top: 50%; width: 18px; height: 18px; margin-top: -9px;
+            fill: none; stroke: rgba(255,255,255,.55); stroke-width: 2.2; stroke-linecap: round; }
+  #eng { display: flex; gap: 8px; }
+  #eng button { font: inherit; font-size: 13px; color: rgba(255,255,255,.6); background: rgba(15,12,30,.5);
+                border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: 5px 13px; cursor: pointer; }
+  #eng button:hover { color: #fff; }
+  #eng button.on { color: #fff; border-color: rgba(255,150,60,.7); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1 id="title">Firefox</h1>
+  <form id="sf" autocomplete="off">
+    <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>
+    <input id="q" type="text" placeholder="Поиск или адрес сайта" autofocus spellcheck="false">
+  </form>
+</div>
+<script>
+(function () {
+  var CELL = 3;        // размер пикселя
+  var STEPS = 1;       // скорость волн
+  var DAMP = 0.955;    // затухание (ближе к 1 = волны живут дольше)
+  var POWER = 1.6;     // сила лодки
+  var C2 = 0.3;        // скорость разбегания, не больше 0.5
+  var BRUSH = 7;       // ширина волны на полной скорости
+  var BRIGHT = 0.85;   // яркость
+  var FOAM = 0.55;     // сила белой пены на гребнях (0 = выключить)
+
+  var cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  var W, H, img, buf, cur, prev, tA, tW, tA2, tW2, last = null, speed = 0;
+
+  var STOPS = [[135,55,215],[225,45,75],[245,130,35],[245,210,65],[135,55,215]];
+  var N = 128, pal = [];
+  for (var i = 0; i < N; i++) {
+    var p = i / N * (STOPS.length - 1), k = Math.floor(p), f = p - k, a = STOPS[k], b = STOPS[k + 1];
+    pal.push([a[0] + (b[0]-a[0])*f, a[1] + (b[1]-a[1])*f, a[2] + (b[2]-a[2])*f]);
+  }
+
+  function resize() {
+    W = Math.ceil(innerWidth / CELL); H = Math.ceil(innerHeight / CELL);
+    cv.width = W; cv.height = H;
+    img = ctx.createImageData(W, H); buf = img.data;
+    var n = W * H;
+    cur = new Float32Array(n); prev = new Float32Array(n);
+    tA = new Float32Array(n); tW = new Float32Array(n); tA2 = new Float32Array(n); tW2 = new Float32Array(n);
+    for (var q = 3; q < buf.length; q += 4) buf[q] = 255;
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // лодка толкает воду и красит её в текущий цвет пути
+  function push(x, y, amp, rad, hue) {
+    for (var dy = -rad; dy <= rad; dy++) for (var dx = -rad; dx <= rad; dx++) {
+      var d2 = dx*dx + dy*dy; if (d2 > rad*rad) continue;
+      var xx = x + dx, yy = y + dy;
+      if (xx < 1 || yy < 1 || xx >= W-1 || yy >= H-1) continue;
+      var o = yy * W + xx, fall = 1 - d2 / (rad*rad + 1);
+      cur[o] = Math.max(-3, Math.min(3, cur[o] + POWER * 0.3 * amp * fall));
+      tW[o] = 1; tA[o] = hue;
+    }
+  }
+  addEventListener('mousemove', function (e) {
+    var x = e.clientX / CELL, y = e.clientY / CELL;
+    if (last) {
+      var dx = x - last.x, dy = y - last.y, dist = Math.sqrt(dx*dx + dy*dy);
+      speed = speed * 0.7 + dist * 0.3;                         // сглаженная скорость
+      var amp = Math.min(1.8, 0.3 + speed / 5);                 // быстрее = мощнее
+      var rad = Math.max(2, Math.round(BRUSH * (0.5 + 0.5 * Math.min(1, speed / 6))));
+      var hue = performance.now() / 7000, n = Math.max(1, Math.ceil(dist));
+      for (var s = 1; s <= n; s++) push(Math.round(last.x + dx*s/n), Math.round(last.y + dy*s/n), amp, rad, hue);
+    }
+    last = { x: x, y: y };
+  });
+  addEventListener('mouseleave', function () { last = null; speed = 0; });
+
+  function step() {
+    var w = W, h = H;
+    for (var y = 1; y < h-1; y++) for (var x = 1, o = y*w + 1; x < w-1; x++, o++) {
+      var lap = cur[o-1] + cur[o+1] + cur[o-w] + cur[o+w] - 4*cur[o];
+      prev[o] = (2*cur[o] - prev[o] + C2*lap) * DAMP;
+    }
+    var t = cur; cur = prev; prev = t;
+  }
+  function diffuse() {                                          // цвет растекается вместе с водой
+    var w = W, h = H, t;
+    for (var y = 1; y < h-1; y++) for (var x = 1, o = y*w + 1; x < w-1; x++, o++) {
+      tA2[o] = (tA[o] + 0.2*(tA[o-1] + tA[o+1] + tA[o-w] + tA[o+w] - 4*tA[o])) * 0.985;
+      tW2[o] = (tW[o] + 0.2*(tW[o-1] + tW[o+1] + tW[o-w] + tW[o+w] - 4*tW[o])) * 0.985;
+    }
+    t = tA; tA = tA2; tA2 = t; t = tW; tW = tW2; tW2 = t;
+  }
+
+  function frame(now) {
+    for (var s = 0; s < STEPS; s++) step();
+    diffuse();
+    var fb = now / 7000, o4 = 0;
+    for (var i = 0, n = W*H; i < n; i++, o4 += 4) {
+      var v = cur[i], a = v < 0 ? -v : v;
+      if (a < 0.03) { buf[o4] = buf[o4+1] = buf[o4+2] = 0; continue; }
+      var b = a * 1.3; if (b > 1) b = 1;
+      b = Math.floor(b * 6) / 6 * BRIGHT;
+      var u = v * 0.28; var w8 = tW[i];
+      var hue = (w8 > 0.01 ? tA[i] / w8 : fb) + u * 0.5;        // цвет пути + сдвиг гребень/впадина
+      hue = hue - Math.floor(hue);
+      var c = pal[(hue * N) | 0];
+      var r = c[0]*b, g = c[1]*b, bl = c[2]*b;
+      if (FOAM && v > 0.9) {                                    // пена на высоких гребнях
+        var fm = Math.min(1, (v - 0.9) / 1.4) * FOAM;
+        r += (255 - r) * fm; g += (255 - g) * fm; bl += (255 - bl) * fm;
+      }
+      buf[o4] = r; buf[o4+1] = g; buf[o4+2] = bl;
+    }
+    ctx.putImageData(img, 0, 0);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+<script>
+(function () {
+  var SEARCH = 'https://www.google.com/search?q=';   // поисковик: можно заменить на https://yandex.ru/search/?text= или https://duckduckgo.com/?q=
+  var q = document.getElementById('q');
+  document.getElementById('sf').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var t = q.value.trim(); if (!t) return;
+    var isUrl = /^https?:\/\//i.test(t) || /^[^\s]+\.[a-zа-я]{2,}(\/\S*)?$/i.test(t);
+    location.href = isUrl ? (/^https?:\/\//i.test(t) ? t : 'https://' + t) : SEARCH + encodeURIComponent(t);
+  });
+  setTimeout(function () { q.focus(); }, 50);
+})();
+</script>
+</body>
+</html>
